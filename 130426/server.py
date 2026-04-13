@@ -3,8 +3,20 @@ import threading
 import time
 import random
 
-from gpiozero import LED
-from signal import pause
+try:
+    from gpiozero import LED
+    GPIO_AVAILABLE = True
+except (ImportError, Exception):
+    GPIO_AVAILABLE = False
+
+    # LED finto: usato quando gpiozero non è disponibile (es. su PC senza GPIO)
+    class LED:
+        def __init__(self, pin):
+            self.pin = pin
+        def on(self):
+            print(f"  [mock] LED pin {self.pin:2d} → ON")
+        def off(self):
+            print(f"  [mock] LED pin {self.pin:2d} → OFF")
 
 from protocol import Opcode, Message, ProtocolError, msg_set_state
 
@@ -345,5 +357,7 @@ class ProtocolServer:
 # ============================================================
 
 if __name__ == "__main__":
+    if not GPIO_AVAILABLE:
+        print("[WARN] gpiozero non disponibile — modalità mock (nessun LED fisico)")
     server = ProtocolServer(HOST, PORT, LED_PINS)
     server.run()
