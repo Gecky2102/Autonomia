@@ -137,20 +137,52 @@ MENU_GIOCHI = _build_game_menu()
 GAME_IDS = {str(k) for k in GAMES}
 
 
+def _parse_bitmask(raw: str) -> int:
+    """Converte la stringa inserita dall'utente in un intero.
+
+    Accetta tre formati:
+      binario  → '10101'
+      hex      → '0x15'
+      decimale → '21'
+
+    Solleva ValueError se il formato non è riconoscibile o il valore
+    è fuori dal range valido per 5 LED (0–31).
+    """
+    raw = raw.strip()
+    if raw.startswith(("0x", "0X")):
+        valore = int(raw, 16)
+    elif all(c in "01" for c in raw) and raw:
+        valore = int(raw, 2)
+    else:
+        valore = int(raw)   # ValueError se non è un numero
+
+    if valore < 0 or valore > 31:
+        raise ValueError(f"{valore} fuori range — con 5 LED la bitmask valida è 0–31 (0b00000–0b11111)")
+
+    return valore
+
+
 def _menu_giochi(client: ProtocolClient):
     print(MENU_GIOCHI)
 
-    while True:
-        scelta = input("gioco >>> ").strip().lower()
+    max_id = max(GAMES)
 
-        if scelta == "b":
+    while True:
+        scelta = input("gioco >>> ").strip()
+
+        if scelta.lower() == "b":
             break
 
-        elif scelta in GAME_IDS:
-            client.start_game(int(scelta))
+        if not scelta.isdigit():
+            print("    inserisci un numero oppure 'b' per tornare")
+            continue
 
+        game_id = int(scelta)
+
+        if game_id not in GAMES:
+            print(f"    gioco {game_id} non esiste — scegli un ID tra 0 e {max_id}")
         else:
-            print("    ID non valido — scegli un numero dal menu oppure 'b' per tornare")
+            client.start_game(game_id)
 
 
 def run_menu(client: ProtocolClient):
@@ -163,18 +195,12 @@ def run_menu(client: ProtocolClient):
             break
 
         elif scelta == "s":
-            raw = input("    bitmask (es. 10101 oppure 0x15): ").strip()
+            raw = input("    bitmask (es. 10101 oppure 0x15 oppure 21): ").strip()
             try:
-                # accetta binario (10101), hex (0x15) o decimale (21)
-                if raw.startswith("0x") or raw.startswith("0X"):
-                    valore = int(raw, 16)
-                elif all(c in "01" for c in raw):
-                    valore = int(raw, 2)
-                else:
-                    valore = int(raw)
+                valore = _parse_bitmask(raw)
                 client.set_state(valore)
-            except ValueError:
-                print("    valore non valido")
+            except ValueError as e:
+                print(f"    errore: {e}")
 
         elif scelta == "j":
             _menu_giochi(client)
