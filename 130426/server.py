@@ -485,7 +485,7 @@ class GameEngine:
 # ============================================================
 
 class ProtocolServer:
-    """Server TCP che interpreta il protocollo a 2 byte e controlla LED e giochi.
+    """Server TCP che interpreta il protocollo a 1 byte e controlla LED e giochi.
 
     Può gestire più client in contemporanea: ogni connessione
     viene affidata a un thread separato.

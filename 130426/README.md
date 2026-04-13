@@ -1,31 +1,37 @@
-# Idea 4 — Protocollo tipizzato a 2 byte
+# Idea 4 — Protocollo tipizzato a 1 byte
 
-Comunicazione TCP tra un client (PC) e un server (Raspberry Pi) usando un protocollo binario
-minimal: ogni messaggio è esattamente **2 byte** — il primo identifica il tipo di comando
-(opcode), il secondo trasporta i dati (payload).
+Comunicazione TCP tra un client (PC) e un server (Raspberry Pi) usando un protocollo binario minimale: ogni comando e' esattamente **1 byte**.
+
+Il tipo del comando viene inferito dal valore del byte:
+
+- `0-31` -> `SET_STATE` (bitmask LED)
+- `32-255` -> `START_GAME` (ID gioco = byte - 32)
+
+Il protocollo e' unidirezionale: il server non invia risposte.
 
 ---
 
-## Struttura del messaggio
+## Struttura del comando
 
 ```
-Byte 0          Byte 1
-┌──────────────┐ ┌──────────────┐
-│    Opcode    │ │   Payload    │
-└──────────────┘ └──────────────┘
-  tipo comando      dati
+Byte 0
+┌──────────────┐
+│   Command    │
+└──────────────┘
 ```
 
-### Tabella opcode
+### Mappatura byte
 
-| Opcode | Nome        | Payload                  | Descrizione                         |
-|--------|-------------|--------------------------|-------------------------------------|
-| `0x01` | SET_STATE   | Bitmask LED (bit 0–4)    | Imposta lo stato di ciascun LED     |
-| `0x02` | START_GAME  | ID gioco (0–255)         | Avvia un gioco di luce              |
-| `0x03` | STOP_GAME   | Ignorato (`0x00`)        | Arresta il gioco in corso           |
-| `0x04` | GET_STATE   | Ignorato (`0x00`)        | Richiede lo stato corrente          |
+| Byte | Tipo comando | Payload logico |
+|------|--------------|----------------|
+| `0-31` | `SET_STATE` | Bitmask LED (bit 0-4) |
+| `32-255` | `START_GAME` | `game_id = byte - 32` |
 
-Solo `GET_STATE` genera una risposta: il server risponde con `SET_STATE` + bitmask attuale.
+Costanti di riferimento (in `protocol.py`):
+
+- `BITMASK_MAX = 31`
+- `GAME_OFFSET = 32`
+- `GAME_MAX_ID = 223`
 
 ---
 
@@ -33,111 +39,111 @@ Solo `GET_STATE` genera una risposta: il server risponde con `SET_STATE` + bitma
 
 ```
 130426/
-├── protocol.py   # definizione del protocollo (opcode, Message, helper)
-├── server.py     # server Raspberry Pi: gestisce LED e giochi
-├── client.py     # client PC: invia comandi al server
-└── README.md
+|-- protocol.py
+|-- server.py
+|-- client.py
+|-- tests/
+|   |-- test_protocol.py
+|   `-- test_client_parse_bitmask.py
+`-- README.md
 ```
 
 ### `protocol.py`
 
-Contiene tutto ciò che è condiviso tra client e server:
+Contiene la logica condivisa tra client e server:
 
-- **`Opcode`** — enum con i 4 opcode definiti.
-- **`Message`** — classe che rappresenta un messaggio:
-  - `encode()` → serializza in 2 byte con `struct.pack`
-  - `decode(data)` → deserializza 2 byte e solleva `ProtocolError` se malformati
-- **Funzioni helper** — `msg_set_state`, `msg_start_game`, `msg_stop_game`, `msg_get_state`
-  per costruire messaggi senza dover ricordare gli opcode a mano.
+- `CommandType` (`SET_STATE`, `START_GAME`)
+- `Command` con:
+  - `encode()` -> serializza in 1 byte
+  - `decode(data)` -> deserializza 1 byte e valida la lunghezza
+- helper:
+  - `cmd_set_state(bitmask)`
+  - `cmd_start_game(game_id)`
+  - `cmd_all_off()`
+
+Validazione:
+
+- bitmask valida: `0-31`
+- game_id valido: `0-223`
 
 ### `server.py`
 
-Gira sul Raspberry Pi. Si compone di tre classi:
+- `LEDBank`: controlla 5 LED tramite bitmask.
+- `GameEngine`: esegue i giochi di luce in un thread dedicato (stop con `threading.Event`).
+- `ProtocolServer`: riceve 1 byte, lo decodifica e fa dispatch:
+  - `SET_STATE` -> ferma eventuale gioco e imposta lo stato LED
+  - `START_GAME` -> avvia il gioco richiesto
 
-- **`LEDBank`** — controlla il banco di 5 LED tramite bitmask. Il bit N accende il LED N.
-  Mantiene `_state` internamente per poter rispondere a `GET_STATE` senza leggere i GPIO.
-
-- **`GameEngine`** — esegue i giochi in un thread separato usando `threading.Event`
-  come "bandierina" di stop (stesso pattern di `160326/thread.py`).
-  Il metodo `_sleep` è interrompibile: non aspetta il timeout se lo stop è richiesto.
-
-  | ID | Gioco           | Descrizione                         |
-  |----|-----------------|-------------------------------------|
-  | 0  | Chase           | Luce che scorre da sinistra a destra|
-  | 1  | Blink           | Tutti i LED lampeggiano insieme     |
-  | 2  | Alternating     | Pattern 10101 / 01010 alternato     |
-  | 3  | Binary count    | Conta in binario da 0 a 31          |
-
-- **`ProtocolServer`** — server TCP che accetta più client in contemporanea
-  (un thread per connessione). Il metodo `_dispatch` fa lo switch sull'opcode
-  e chiama il metodo giusto su `LEDBank` o `GameEngine`.
+Sono disponibili 24 giochi (`game_id` da 0 a 23).
 
 ### `client.py`
 
-Gira sul PC. La classe **`ProtocolClient`** espone un'API ad alto livello:
+`ProtocolClient` espone API ad alto livello:
 
 ```python
-with ProtocolClient("192.168.5.55", 8888) as client:
-    client.set_state(0b10101)   # LED 0, 2, 4 accesi
-    client.start_game(1)        # avvia blink
-    client.stop_game()
-    state = client.get_state()  # legge stato dal server
+with ProtocolClient("192.168.5.62", 8888) as client:
+    client.set_state(0b10101)
+    client.start_game(3)
+    client.stop()
 ```
 
-Il context manager (`with`) garantisce che il socket venga sempre chiuso.
+Include anche un menu interattivo e il parser `_parse_bitmask`, che accetta input:
+
+- binario (`10101`)
+- esadecimale (`0x15`)
+- decimale (`21`)
 
 ---
 
 ## Collegamento hardware (Raspberry Pi)
 
 ```
-Raspberry Pi            Breadboard
-─────────────           ──────────
-GPIO 17  ──[220Ω]──── LED 0 (anodo) ──── GND
-GPIO 27  ──[220Ω]──── LED 1 (anodo) ──── GND
-GPIO 22  ──[220Ω]──── LED 2 (anodo) ──── GND
-GPIO 23  ──[220Ω]──── LED 3 (anodo) ──── GND
-GPIO 24  ──[220Ω]──── LED 4 (anodo) ──── GND
-GND      ──────────── colonna GND
+GPIO 17  --[220ohm]-- LED 0 (anodo) -- GND
+GPIO 27  --[220ohm]-- LED 1 (anodo) -- GND
+GPIO 22  --[220ohm]-- LED 2 (anodo) -- GND
+GPIO 23  --[220ohm]-- LED 3 (anodo) -- GND
+GPIO 24  --[220ohm]-- LED 4 (anodo) -- GND
 ```
-
-> Il valore da 220Ω è indicativo per LED standard a 3.3V / ~10mA.
-> Il catodo (gamba corta) va a massa; l'anodo (gamba lunga) al pin GPIO tramite resistore.
 
 ---
 
-## Come avviare
+## Avvio
 
-**Sul Raspberry Pi** (server):
+Server (su Raspberry Pi):
+
 ```bash
 python3 server.py
 ```
 
-**Sul PC** (client):
+Client (su PC):
+
 ```bash
 python3 client.py
 ```
 
-Modifica `SERVER_IP` in `client.py` con l'IP del Raspberry Pi sulla rete locale.
-
 ---
 
-## Esempio di scambio
+## Suite di test
 
+Dalla cartella `130426`:
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
-Client → Server:  0x01 0x15    SET_STATE,  bitmask 10101 → LED 0, 2, 4 accesi
-Client → Server:  0x02 0x00    START_GAME, gioco 0 (chase)
-Client → Server:  0x03 0x00    STOP_GAME
-Client → Server:  0x04 0x00    GET_STATE
-Server → Client:  0x01 0x15    risposta: stato corrente = LED 0, 2, 4 accesi
-```
+
+Copertura attuale:
+
+- validazione range in `cmd_set_state` e `cmd_start_game`
+- codifica/decodifica di `Command`
+- helper `cmd_all_off`
+- parsing input utente in `_parse_bitmask`
 
 ---
 
 ## Dipendenze
 
 ```bash
-pip install gpiozero   # solo sul Raspberry Pi
+pip install gpiozero
 ```
 
-Sul PC `gpiozero` non serve: `client.py` importa solo `protocol.py` e la libreria standard.
+`gpiozero` serve solo sul Raspberry Pi. In ambiente PC il server usa una modalita' mock se la libreria non e' disponibile.

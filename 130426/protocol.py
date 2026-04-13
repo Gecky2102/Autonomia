@@ -71,14 +71,14 @@ class Command:
 
 def cmd_set_state(bitmask: int) -> Command:
     """bitmask: bit 0–4 → LED 0–4  (es. 0b10101 → LED 0, 2, 4 accesi)."""
-    if bitmask > BITMASK_MAX:
-        raise ValueError(f"Bitmask {bitmask} fuori range (max {BITMASK_MAX})")
+    if not (0 <= bitmask <= BITMASK_MAX):
+        raise ValueError(f"Bitmask {bitmask} fuori range (0–{BITMASK_MAX})")
     return Command(CommandType.SET_STATE, bitmask)
 
 def cmd_start_game(game_id: int) -> Command:
     """game_id: 0–223  →  byte inviato = game_id + 32."""
-    if game_id > GAME_MAX_ID:
-        raise ValueError(f"game_id {game_id} fuori range (max {GAME_MAX_ID})")
+    if not (0 <= game_id <= GAME_MAX_ID):
+        raise ValueError(f"game_id {game_id} fuori range (0–{GAME_MAX_ID})")
     return Command(CommandType.START_GAME, game_id)
 
 def cmd_all_off() -> Command:
