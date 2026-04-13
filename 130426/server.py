@@ -92,16 +92,30 @@ class GameEngine:
 
         # mappa game_id → metodo di gioco (bound method, non serve passare self)
         self._games = {
-            0: self._game_chase,
-            1: self._game_blink,
-            2: self._game_alternating,
-            3: self._game_binary_count,
-            4: self._game_bounce,
-            5: self._game_random,
-            6: self._game_fill_drain,
-            7: self._game_sos,
-            8: self._game_heartbeat,
-            9: self._game_inside_out,
+            0:  self._game_chase,
+            1:  self._game_blink,
+            2:  self._game_alternating,
+            3:  self._game_binary_count,
+            4:  self._game_bounce,
+            5:  self._game_random,
+            6:  self._game_fill_drain,
+            7:  self._game_sos,
+            8:  self._game_heartbeat,
+            9:  self._game_inside_out,
+            10: self._game_knight_rider,
+            11: self._game_police,
+            12: self._game_strobe,
+            13: self._game_snake,
+            14: self._game_twinkle,
+            15: self._game_wipe,
+            16: self._game_pairs,
+            17: self._game_morse_ciao,
+            18: self._game_dice,
+            19: self._game_binary_clock,
+            20: self._game_outside_in,
+            21: self._game_zip,
+            22: self._game_fireworks,
+            23: self._game_morse_luce,
         }
 
     def _sleep(self, seconds: float):
@@ -237,6 +251,210 @@ class GameEngine:
                     break
                 self.bank.set_state(mask)
                 self._sleep(0.15)
+
+    def _game_knight_rider(self):
+        """Gioco 10: Knight Rider — punto luminoso che rimbalza con scia di 2 LED."""
+        n = len(self.bank._leds)
+        sequenza = list(range(n)) + list(range(n - 2, 0, -1))
+        prev = None
+        while not self._stop.is_set():
+            for i in sequenza:
+                if self._stop.is_set(): break
+                mask = (1 << i) | (1 << prev if prev is not None else 0)
+                self.bank.set_state(mask)
+                prev = i
+                self._sleep(0.08)
+
+    def _game_police(self):
+        """Gioco 11: luci della polizia — sinistra e destra lampeggiano in alternanza."""
+        sinistra = 0b00011   # LED 0 e 1
+        destra   = 0b11000   # LED 3 e 4
+        while not self._stop.is_set():
+            for _ in range(3):
+                if self._stop.is_set(): break
+                self.bank.set_state(sinistra); self._sleep(0.08)
+                self.bank.all_off();           self._sleep(0.05)
+            for _ in range(3):
+                if self._stop.is_set(): break
+                self.bank.set_state(destra);   self._sleep(0.08)
+                self.bank.all_off();           self._sleep(0.05)
+            self._sleep(0.2)
+
+    def _game_strobe(self):
+        """Gioco 12: strobo — blink velocissimo (effetto discoteca)."""
+        while not self._stop.is_set():
+            self.bank.all_on();  self._sleep(0.04)
+            self.bank.all_off(); self._sleep(0.04)
+
+    def _game_snake(self):
+        """Gioco 13: snake — chase con scia di 2 LED."""
+        n = len(self.bank._leds)
+        sequenza = list(range(n)) + list(range(n - 2, 0, -1))
+        while not self._stop.is_set():
+            for idx, i in enumerate(sequenza):
+                if self._stop.is_set(): break
+                mask = 1 << i
+                if idx > 0:
+                    mask |= 1 << sequenza[idx - 1]
+                self.bank.set_state(mask)
+                self._sleep(0.1)
+
+    def _game_twinkle(self):
+        """Gioco 14: twinkle — LED casuali che lampeggiano brevemente e in modo irregolare."""
+        n = len(self.bank._leds)
+        while not self._stop.is_set():
+            led = random.randint(0, n - 1)
+            self.bank.set_state(1 << led)
+            self._sleep(0.08)
+            self.bank.all_off()
+            self._sleep(random.uniform(0.05, 0.25))
+
+    def _game_wipe(self):
+        """Gioco 15: wipe — accende da sinistra a destra, poi spegne nello stesso verso."""
+        n = len(self.bank._leds)
+        while not self._stop.is_set():
+            mask = 0
+            for i in range(n):          # accendi da sinistra
+                if self._stop.is_set(): break
+                mask |= (1 << i)
+                self.bank.set_state(mask)
+                self._sleep(0.15)
+            for i in range(n):          # spegni da sinistra
+                if self._stop.is_set(): break
+                mask &= ~(1 << i)
+                self.bank.set_state(mask)
+                self._sleep(0.15)
+
+    def _game_pairs(self):
+        """Gioco 16: coppie — (bordi), (interni), (centro) lampeggiano a turno."""
+        coppie = [0b10001, 0b01010, 0b00100]   # bordi → interni → centro
+        while not self._stop.is_set():
+            for mask in coppie:
+                if self._stop.is_set(): break
+                self.bank.set_state(mask)
+                self._sleep(0.35)
+            self.bank.all_off()
+            self._sleep(0.15)
+
+    def _game_morse_ciao(self):
+        """Gioco 17: scrive CIAO in codice Morse con tutti i LED."""
+        DIT = 0.2
+        DAH = 0.6
+        SEP = 0.2    # pausa tra simboli della stessa lettera
+        LET = 0.5    # pausa tra lettere
+        WRD = 1.2    # pausa tra ripetizioni della parola
+
+        MORSE = {
+            'C': [DAH, DIT, DAH, DIT],
+            'I': [DIT, DIT],
+            'A': [DIT, DAH],
+            'O': [DAH, DAH, DAH],
+        }
+
+        while not self._stop.is_set():
+            for simboli in MORSE.values():
+                for durata in simboli:
+                    if self._stop.is_set(): break
+                    self.bank.all_on();  self._sleep(durata)
+                    self.bank.all_off(); self._sleep(SEP)
+                self._sleep(LET)
+            self._sleep(WRD)
+
+    def _game_dice(self):
+        """Gioco 18: dado — agitazione casuale poi risultato 1–5 (N LED accesi da sinistra)."""
+        n       = len(self.bank._leds)
+        max_val = (1 << n) - 1
+        while not self._stop.is_set():
+            for _ in range(12):         # agitazione
+                if self._stop.is_set(): break
+                self.bank.set_state(random.randint(1, max_val))
+                self._sleep(0.07)
+            if self._stop.is_set(): break
+            risultato = random.randint(1, n)
+            self.bank.set_state((1 << risultato) - 1)   # N LED accesi
+            self._sleep(2.0)
+
+    def _game_binary_clock(self):
+        """Gioco 19: orologio binario — mostra i secondi correnti mod 32 in binario."""
+        while not self._stop.is_set():
+            self.bank.set_state(int(time.time()) % 32)
+            self._sleep(1.0)
+
+    def _game_outside_in(self):
+        """Gioco 20: outside in — opposto di inside out, si comprime dai bordi al centro."""
+        n   = len(self.bank._leds)
+        mid = n // 2
+
+        expand = []
+        for r in range(mid + 1):
+            mask = 0
+            for i in range(mid - r, mid + r + 1):
+                if 0 <= i < n:
+                    mask |= (1 << i)
+            expand.append(mask)
+
+        sequenza = list(reversed(expand)) + expand[1:]   # pieno→centro→pieno
+
+        while not self._stop.is_set():
+            for mask in sequenza:
+                if self._stop.is_set(): break
+                self.bank.set_state(mask)
+                self._sleep(0.15)
+
+    def _game_zip(self):
+        """Gioco 21: zip — due punti partono dai bordi opposti e si incrociano al centro."""
+        n = len(self.bank._leds)
+        while not self._stop.is_set():
+            for step in range(n // 2 + 1):     # avvicinamento
+                if self._stop.is_set(): break
+                mask = (1 << step) | (1 << (n - 1 - step))
+                self.bank.set_state(mask)
+                self._sleep(0.12)
+            for step in range(n // 2, -1, -1): # allontanamento
+                if self._stop.is_set(): break
+                mask = (1 << step) | (1 << (n - 1 - step))
+                self.bank.set_state(mask)
+                self._sleep(0.12)
+
+    def _game_fireworks(self):
+        """Gioco 22: fuochi d'artificio — esplosioni di luce che si espandono da un punto casuale."""
+        n = len(self.bank._leds)
+        while not self._stop.is_set():
+            centro = random.randint(0, n - 1)
+            for raggio in range(n):
+                if self._stop.is_set(): break
+                mask = 0
+                for i in range(centro - raggio, centro + raggio + 1):
+                    if 0 <= i < n:
+                        mask |= (1 << i)
+                self.bank.set_state(mask)
+                self._sleep(0.07)
+            self.bank.all_off()
+            self._sleep(random.uniform(0.3, 0.7))
+
+    def _game_morse_luce(self):
+        """Gioco 23: scrive LUCE in codice Morse (tematico con il progetto)."""
+        DIT = 0.2
+        DAH = 0.6
+        SEP = 0.2
+        LET = 0.5
+        WRD = 1.2
+
+        MORSE = {
+            'L': [DIT, DAH, DIT, DIT],
+            'U': [DIT, DIT, DAH],
+            'C': [DAH, DIT, DAH, DIT],
+            'E': [DIT],
+        }
+
+        while not self._stop.is_set():
+            for simboli in MORSE.values():
+                for durata in simboli:
+                    if self._stop.is_set(): break
+                    self.bank.all_on();  self._sleep(durata)
+                    self.bank.all_off(); self._sleep(SEP)
+                self._sleep(LET)
+            self._sleep(WRD)
 
     # --- Controllo ---
 
