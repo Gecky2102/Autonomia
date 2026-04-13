@@ -1,10 +1,6 @@
 import socket
-import time
 
-from protocol import (
-    Message, Opcode, ProtocolError,
-    msg_set_state, msg_start_game, msg_stop_game, msg_get_state
-)
+from protocol import Command, cmd_set_state, cmd_start_game, cmd_all_off
 
 
 # ============================================================
@@ -20,13 +16,17 @@ SERVER_PORT = 8888
 # ============================================================
 
 class ProtocolClient:
-    """Client TCP per comunicare con il server tramite il protocollo a 2 byte.
+    """Client TCP per comunicare con il server tramite il protocollo a 1 byte.
 
-    Supporta il context manager (with), quindi la connessione viene
-    chiusa automaticamente anche in caso di eccezione.
+    Ogni comando è un singolo byte:
+      0–31  → bitmask LED  (SET_STATE)
+      32–255 → codice gioco (START_GAME, game_id = byte - 32)
+
+    Il protocollo è unidirezionale: il server non risponde mai.
 
         with ProtocolClient(SERVER_IP, SERVER_PORT) as c:
             c.set_state(0b10101)
+            c.start_game(4)
     """
 
     def __init__(self, host: str, port: int):
@@ -54,42 +54,26 @@ class ProtocolClient:
     def __exit__(self, *_):
         self.close()
 
-    # --- Invio/ricezione raw ---
+    # --- Invio raw ---
 
-    def _send(self, msg: Message):
-        """Invia un messaggio e, se l'opcode prevede una risposta, la legge e la restituisce."""
-        self._sock.sendall(msg.encode())
-        print(f"[TX] {msg}")
-
-        # solo GET_STATE genera una risposta dal server
-        if msg.opcode == Opcode.GET_STATE:
-            data = self._sock.recv(Message.SIZE)
-            response = Message.decode(data)
-            print(f"[RX] {response}")
-            return response
-
-        return None
+    def _send(self, cmd: Command):
+        """Invia 1 byte al server. Nessuna risposta attesa."""
+        self._sock.sendall(cmd.encode())
+        print(f"[TX] {cmd}")
 
     # --- API pubblica ---
 
     def set_state(self, bitmask: int):
-        """Imposta i LED tramite bitmask (bit 0–4 = LED 0–4)."""
-        self._send(msg_set_state(bitmask))
+        """Imposta i LED tramite bitmask (bit 0–4 = LED 0–4). Ferma anche il gioco."""
+        self._send(cmd_set_state(bitmask))
 
     def start_game(self, game_id: int):
-        """Avvia il gioco con l'ID specificato (0–3)."""
-        self._send(msg_start_game(game_id))
+        """Avvia il gioco con l'ID specificato (0–223)."""
+        self._send(cmd_start_game(game_id))
 
-    def stop_game(self):
-        """Ferma il gioco in corso."""
-        self._send(msg_stop_game())
-
-    def get_state(self) -> int:
-        """Chiede al server lo stato corrente dei LED; restituisce la bitmask."""
-        response = self._send(msg_get_state())
-        if response and response.opcode == Opcode.SET_STATE:
-            return response.payload
-        return 0x00
+    def stop(self):
+        """Ferma il gioco e spegne tutti i LED (invia bitmask 0)."""
+        self._send(cmd_all_off())
 
 
 # ============================================================
@@ -126,12 +110,11 @@ GAMES = {
 
 MENU_PRINCIPALE = """
 ╔══════════════════════════════════════╗
-║         PROTOCOLLO 2 BYTE            ║
+║         PROTOCOLLO 1 BYTE            ║
 ╠══════════════════════════════════════╣
 ║  s  → SET_STATE  (inserisci bitmask) ║
 ║  j  → menu GIOCHI                    ║
-║  x  → STOP_GAME                      ║
-║  g  → GET_STATE                      ║
+║  x  → stop tutto (LED off)           ║
 ║  q  → esci                           ║
 ╚══════════════════════════════════════╝
 """
@@ -198,11 +181,7 @@ def run_menu(client: ProtocolClient):
             print(MENU_PRINCIPALE)
 
         elif scelta == "x":
-            client.stop_game()
-
-        elif scelta == "g":
-            state = client.get_state()
-            print(f"    Stato LED: {state:05b}  (0x{state:02X})")
+            client.stop()
 
         else:
             print("    shortcut non riconosciuta — riprova")

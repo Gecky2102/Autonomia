@@ -1,90 +1,86 @@
-import struct
-from enum import IntEnum
+from enum import Enum
 
 
 # ============================================================
-# OPCODE — identifica il tipo di comando nel primo byte
-# ============================================================
-
-class Opcode(IntEnum):
-    SET_STATE  = 0x01   # imposta i LED tramite bitmask
-    START_GAME = 0x02   # avvia un gioco di luce
-    STOP_GAME  = 0x03   # ferma il gioco in corso
-    GET_STATE  = 0x04   # richiede lo stato corrente al server
-
-
-# ============================================================
-# ECCEZIONI
-# ============================================================
-
-class ProtocolError(Exception):
-    """Sollevata quando un messaggio non rispetta il formato atteso."""
-    pass
-
-
-# ============================================================
-# MESSAGGIO — unità atomica di comunicazione (2 byte fissi)
+# SOGLIE DEL PROTOCOLLO
 #
-#   Byte 0: opcode  → tipo di comando
-#   Byte 1: payload → dati associati al comando
+#   0–31   → bitmask di stato LED  (5 bit, copre fino a 5 LED)
+#   32–255 → codice gioco di luce  (224 giochi disponibili)
+#
+#   Un solo byte: nessun campo "tipo" esplicito.
+#   Il tipo si inferisce confrontando il valore con la soglia.
 # ============================================================
 
-class Message:
+BITMASK_MAX  = 31    # 0b11111 — valore massimo per una bitmask a 5 LED
+GAME_OFFSET  = 32    # i codici gioco partono da qui
+GAME_MAX_ID  = 255 - GAME_OFFSET   # 223 — massimo ID gioco supportato
 
-    SIZE = 2  # dimensione fissa in byte, non cambia mai
 
-    def __init__(self, opcode: Opcode, payload: int = 0x00):
-        self.opcode  = opcode
-        self.payload = payload & 0xFF  # il payload è sempre un singolo byte
+class CommandType(Enum):
+    SET_STATE  = "state"
+    START_GAME = "game"
+
+
+# ============================================================
+# COMMAND — un singolo byte inviato dal client al server
+# ============================================================
+
+class Command:
+
+    SIZE = 1   # il protocollo è a 1 byte fisso
+
+    def __init__(self, tipo: CommandType, valore: int):
+        self.tipo   = tipo
+        self.valore = valore
 
     def encode(self) -> bytes:
-        """Serializza il messaggio nei 2 byte da inviare sul socket."""
-        return struct.pack('BB', int(self.opcode), self.payload)
+        """Serializza il comando in 1 byte da inviare sul socket."""
+        if self.tipo == CommandType.SET_STATE:
+            return bytes([self.valore & BITMASK_MAX])
+        else:
+            return bytes([GAME_OFFSET + self.valore])
 
     @classmethod
-    def decode(cls, data: bytes) -> 'Message':
-        """Deserializza 2 byte in arrivo dal socket in un oggetto Message.
+    def decode(cls, data: bytes) -> 'Command':
+        """Deserializza 1 byte in arrivo in un oggetto Command.
 
-        Solleva ProtocolError se i byte sono malformati o l'opcode è sconosciuto.
+        La distinzione tra stato e gioco si basa sulla soglia:
+          byte ≤ 31  → SET_STATE  (bitmask)
+          byte ≥ 32  → START_GAME (game_id = byte - 32)
         """
         if len(data) != cls.SIZE:
-            raise ProtocolError(
-                f"Messaggio malformato: attesi {cls.SIZE} byte, ricevuti {len(data)}"
-            )
+            raise ValueError(f"Byte atteso: {cls.SIZE}, ricevuti: {len(data)}")
 
-        opcode_byte, payload = struct.unpack('BB', data)
+        byte_val = data[0]
 
-        try:
-            opcode = Opcode(opcode_byte)
-        except ValueError:
-            raise ProtocolError(f"Opcode sconosciuto: 0x{opcode_byte:02X}")
-
-        return cls(opcode, payload)
+        if byte_val <= BITMASK_MAX:
+            return cls(CommandType.SET_STATE, byte_val)
+        else:
+            return cls(CommandType.START_GAME, byte_val - GAME_OFFSET)
 
     def __repr__(self):
-        return f"Message({self.opcode.name}, payload=0x{self.payload:02X})"
+        if self.tipo == CommandType.SET_STATE:
+            return f"Command(SET_STATE, bitmask={self.valore:05b})"
+        else:
+            return f"Command(START_GAME, game_id={self.valore})"
 
 
 # ============================================================
-# HELPER — funzioni per costruire i messaggi comuni
+# HELPER — costruttori rapidi
 # ============================================================
 
-def msg_set_state(bitmask: int) -> Message:
-    """Costruisce SET_STATE con la bitmask dei LED.
+def cmd_set_state(bitmask: int) -> Command:
+    """bitmask: bit 0–4 → LED 0–4  (es. 0b10101 → LED 0, 2, 4 accesi)."""
+    if bitmask > BITMASK_MAX:
+        raise ValueError(f"Bitmask {bitmask} fuori range (max {BITMASK_MAX})")
+    return Command(CommandType.SET_STATE, bitmask)
 
-    Ogni bit corrisponde a un LED: bit 0 → LED 0, bit 4 → LED 4.
-    Es: 0b10101 (0x15) → LED 0, 2, 4 accesi.
-    """
-    return Message(Opcode.SET_STATE, bitmask)
+def cmd_start_game(game_id: int) -> Command:
+    """game_id: 0–223  →  byte inviato = game_id + 32."""
+    if game_id > GAME_MAX_ID:
+        raise ValueError(f"game_id {game_id} fuori range (max {GAME_MAX_ID})")
+    return Command(CommandType.START_GAME, game_id)
 
-def msg_start_game(game_id: int) -> Message:
-    """Costruisce START_GAME con l'ID del gioco (0–255)."""
-    return Message(Opcode.START_GAME, game_id)
-
-def msg_stop_game() -> Message:
-    """Costruisce STOP_GAME. Il payload è ignorato dal server (convenzionalmente 0x00)."""
-    return Message(Opcode.STOP_GAME, 0x00)
-
-def msg_get_state() -> Message:
-    """Costruisce GET_STATE. Il payload è ignorato dal server (convenzionalmente 0x00)."""
-    return Message(Opcode.GET_STATE, 0x00)
+def cmd_all_off() -> Command:
+    """Spegne tutti i LED e ferma il gioco in corso (bitmask = 0)."""
+    return Command(CommandType.SET_STATE, 0x00)

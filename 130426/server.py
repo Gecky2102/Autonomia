@@ -18,7 +18,7 @@ except (ImportError, Exception):
         def off(self):
             print(f"  [mock] LED pin {self.pin:2d} → OFF")
 
-from protocol import Opcode, Message, ProtocolError, msg_set_state
+from protocol import Command, CommandType
 
 
 # ============================================================
@@ -497,54 +497,37 @@ class ProtocolServer:
         self.bank   = LEDBank(led_pins)
         self.engine = GameEngine(self.bank)
 
-    def _dispatch(self, msg: Message):
-        """Esegue l'azione corrispondente all'opcode ricevuto.
+    def _dispatch(self, cmd: Command):
+        """Esegue l'azione in base al tipo di comando.
 
-        Restituisce un Message di risposta se il comando lo richiede,
-        None altrimenti.
+        SET_STATE  → ferma eventuale gioco, imposta bitmask LED
+        START_GAME → avvia il gioco (ferma automaticamente il precedente)
+
+        Il protocollo è unidirezionale: il server non invia risposte.
         """
-        if msg.opcode == Opcode.SET_STATE:
-            self.bank.set_state(msg.payload)
-            print(f"[SET_STATE] bitmask = {msg.payload:05b}")
-            return None
+        if cmd.tipo == CommandType.SET_STATE:
+            self.engine.stop()              # un nuovo stato ferma il gioco
+            self.bank.set_state(cmd.valore)
+            print(f"[SET_STATE] bitmask = {cmd.valore:05b}")
 
-        elif msg.opcode == Opcode.START_GAME:
-            self.engine.start(msg.payload)
-            return None
-
-        elif msg.opcode == Opcode.STOP_GAME:
-            self.engine.stop()
-            return None
-
-        elif msg.opcode == Opcode.GET_STATE:
-            state = self.bank.get_state()
-            print(f"[GET_STATE] stato corrente = {state:05b}")
-            # il server risponde con SET_STATE + bitmask attuale
-            return msg_set_state(state)
-
-        return None
+        elif cmd.tipo == CommandType.START_GAME:
+            self.engine.start(cmd.valore)
 
     def _handle_client(self, conn: socket.socket, addr):
         print(f"[CONN] connesso: {addr}")
 
         try:
             while True:
-                data = conn.recv(Message.SIZE)
+                data = conn.recv(Command.SIZE)   # legge esattamente 1 byte
                 if not data:
-                    # il client ha chiuso la connessione
                     break
 
                 try:
-                    msg = Message.decode(data)
-                    print(f"[RX] {msg}")
+                    cmd = Command.decode(data)
+                    print(f"[RX] {cmd}")
+                    self._dispatch(cmd)
 
-                    response = self._dispatch(msg)
-                    if response:
-                        conn.sendall(response.encode())
-                        print(f"[TX] {response}")
-
-                except ProtocolError as e:
-                    # opcode sconosciuto: lo logghiamo e andiamo avanti
+                except ValueError as e:
                     print(f"[ERR] {e}")
 
         except ConnectionResetError:
