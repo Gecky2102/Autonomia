@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import random
 
 from gpiozero import LED
 from signal import pause
@@ -83,6 +84,12 @@ class GameEngine:
             1: self._game_blink,
             2: self._game_alternating,
             3: self._game_binary_count,
+            4: self._game_bounce,
+            5: self._game_random,
+            6: self._game_fill_drain,
+            7: self._game_sos,
+            8: self._game_heartbeat,
+            9: self._game_inside_out,
         }
 
     def _sleep(self, seconds: float):
@@ -128,6 +135,96 @@ class GameEngine:
                     break
                 self.bank.set_state(n)
                 self._sleep(0.12)
+
+    def _game_bounce(self):
+        """Gioco 4: ping pong — il punto di luce va avanti e indietro."""
+        n = len(self.bank._leds)
+        # costruiamo la sequenza: 0,1,2,3,4,3,2,1 (i bordi non si ripetono)
+        sequenza = list(range(n)) + list(range(n - 2, 0, -1))
+        while not self._stop.is_set():
+            for i in sequenza:
+                if self._stop.is_set():
+                    break
+                self.bank.set_state(1 << i)
+                self._sleep(0.1)
+
+    def _game_random(self):
+        """Gioco 5: accende una combinazione casuale di LED ogni 150ms."""
+        n = len(self.bank._leds)
+        max_mask = (1 << n) - 1
+        while not self._stop.is_set():
+            self.bank.set_state(random.randint(0, max_mask))
+            self._sleep(0.15)
+
+    def _game_fill_drain(self):
+        """Gioco 6: riempie i LED uno alla volta da sinistra, poi li spegne da destra."""
+        n = len(self.bank._leds)
+        while not self._stop.is_set():
+            # riempi: a ogni passo accendiamo un LED in più
+            for i in range(n):
+                if self._stop.is_set():
+                    break
+                self.bank.set_state((1 << (i + 1)) - 1)
+                self._sleep(0.2)
+            # svuota: a ogni passo spegniamo il LED più a destra ancora acceso
+            for i in range(n - 1, -1, -1):
+                if self._stop.is_set():
+                    break
+                self.bank.set_state((1 << i) - 1)
+                self._sleep(0.2)
+
+    def _game_sos(self):
+        """Gioco 7: segnale SOS in codice Morse (· · · — — — · · ·) con tutti i LED.
+
+        Omaggio a 160326/thread.py — stessa logica, ma su tutti i LED in parallelo.
+        """
+        while not self._stop.is_set():
+            for _ in range(3):          # S — tre brevi
+                if self._stop.is_set(): break
+                self.bank.all_on();  self._sleep(0.2)
+                self.bank.all_off(); self._sleep(0.2)
+            for _ in range(3):          # O — tre lunghi
+                if self._stop.is_set(): break
+                self.bank.all_on();  self._sleep(0.6)
+                self.bank.all_off(); self._sleep(0.2)
+            for _ in range(3):          # S — tre brevi
+                if self._stop.is_set(): break
+                self.bank.all_on();  self._sleep(0.2)
+                self.bank.all_off(); self._sleep(0.2)
+            self._sleep(1.0)            # pausa tra una ripetizione e l'altra
+
+    def _game_heartbeat(self):
+        """Gioco 8: doppio flash rapido seguito da una lunga pausa (battito cardiaco)."""
+        while not self._stop.is_set():
+            self.bank.all_on();  self._sleep(0.08)   # primo battito
+            self.bank.all_off(); self._sleep(0.12)
+            self.bank.all_on();  self._sleep(0.08)   # secondo battito
+            self.bank.all_off(); self._sleep(0.8)    # diastole
+
+    def _game_inside_out(self):
+        """Gioco 9: si espande dal LED centrale verso i bordi e poi si ricomprime."""
+        n   = len(self.bank._leds)
+        mid = n // 2
+
+        # costruiamo le maschere di espansione una volta sola
+        expand = []
+        for r in range(mid + 1):
+            mask = 0
+            for i in range(mid - r, mid + r + 1):
+                if 0 <= i < n:
+                    mask |= (1 << i)
+            expand.append(mask)
+
+        # la contrazione è l'espansione al contrario (senza ripetere il centro)
+        contract = list(reversed(expand))
+        sequenza = expand + contract[1:]
+
+        while not self._stop.is_set():
+            for mask in sequenza:
+                if self._stop.is_set():
+                    break
+                self.bank.set_state(mask)
+                self._sleep(0.15)
 
     # --- Controllo ---
 

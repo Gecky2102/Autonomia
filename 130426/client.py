@@ -11,8 +11,8 @@ from protocol import (
 # CONFIGURAZIONE
 # ============================================================
 
-SERVER_IP   = "192.168.5.55"
-SERVER_PORT = 8888
+SERVER_IP   = "192.168.5.62"
+SERVER_PORT = 80
 
 
 # ============================================================
@@ -93,32 +93,107 @@ class ProtocolClient:
 
 
 # ============================================================
-# DEMO
+# MENU INTERATTIVO
 # ============================================================
 
+# Nomi dei giochi — specchiati rispetto a GameEngine in server.py
+GAMES = {
+    0: ("Chase",        "luce che scorre da sinistra a destra"),
+    1: ("Blink",        "tutti i LED lampeggiano insieme"),
+    2: ("Alternating",  "pattern 10101 / 01010 alternato"),
+    3: ("Binary count", "conta in binario da 0 a 31"),
+    4: ("Bounce",       "ping pong avanti e indietro"),
+    5: ("Random",       "combinazione casuale ogni 150ms"),
+    6: ("Fill & drain", "riempie da sinistra poi svuota"),
+    7: ("SOS",          "· · · — — — · · · in Morse"),
+    8: ("Heartbeat",    "doppio flash + lunga pausa"),
+    9: ("Inside out",   "si espande dal centro ai bordi"),
+}
+
+MENU_PRINCIPALE = """
+╔══════════════════════════════════════╗
+║         PROTOCOLLO 2 BYTE            ║
+╠══════════════════════════════════════╣
+║  s  → SET_STATE  (inserisci bitmask) ║
+║  j  → menu GIOCHI                    ║
+║  x  → STOP_GAME                      ║
+║  g  → GET_STATE                      ║
+║  q  → esci                           ║
+╚══════════════════════════════════════╝
+"""
+
+def _build_game_menu() -> str:
+    """Costruisce dinamicamente il menu dei giochi dalla lista GAMES."""
+    righe = ["", "╔══════════════════════════════════════════════════╗"]
+    righe.append(   "║               GIOCHI DI LUCE                    ║")
+    righe.append(   "╠══════════════════════════════════════════════════╣")
+    for game_id, (nome, desc) in GAMES.items():
+        riga = f"  {game_id}  {nome:<14} — {desc}"
+        righe.append(f"║{riga:<50}║")
+    righe.append(   "╠══════════════════════════════════════════════════╣")
+    righe.append(   "║  b  → torna al menu principale                   ║")
+    righe.append(   "╚══════════════════════════════════════════════════╝")
+    return "\n".join(righe)
+
+MENU_GIOCHI = _build_game_menu()
+
+GAME_IDS = {str(k) for k in GAMES}
+
+
+def _menu_giochi(client: ProtocolClient):
+    print(MENU_GIOCHI)
+
+    while True:
+        scelta = input("gioco >>> ").strip().lower()
+
+        if scelta == "b":
+            break
+
+        elif scelta in GAME_IDS:
+            client.start_game(int(scelta))
+
+        else:
+            print("    ID non valido — scegli un numero dal menu oppure 'b' per tornare")
+
+
+def run_menu(client: ProtocolClient):
+    print(MENU_PRINCIPALE)
+
+    while True:
+        scelta = input(">>> ").strip().lower()
+
+        if scelta == "q":
+            break
+
+        elif scelta == "s":
+            raw = input("    bitmask (es. 10101 oppure 0x15): ").strip()
+            try:
+                # accetta binario (10101), hex (0x15) o decimale (21)
+                if raw.startswith("0x") or raw.startswith("0X"):
+                    valore = int(raw, 16)
+                elif all(c in "01" for c in raw):
+                    valore = int(raw, 2)
+                else:
+                    valore = int(raw)
+                client.set_state(valore)
+            except ValueError:
+                print("    valore non valido")
+
+        elif scelta == "j":
+            _menu_giochi(client)
+            print(MENU_PRINCIPALE)
+
+        elif scelta == "x":
+            client.stop_game()
+
+        elif scelta == "g":
+            state = client.get_state()
+            print(f"    Stato LED: {state:05b}  (0x{state:02X})")
+
+        else:
+            print("    shortcut non riconosciuta — riprova")
+
+
 if __name__ == "__main__":
-
     with ProtocolClient(SERVER_IP, SERVER_PORT) as client:
-
-        print("\n--- SET_STATE: accendi LED 0, 2, 4 (bitmask 10101) ---")
-        client.set_state(0b10101)
-        time.sleep(1)
-
-        print("\n--- START_GAME 0: chase ---")
-        client.start_game(0)
-        time.sleep(3)
-
-        print("\n--- START_GAME 1: blink (sovrascrive il precedente) ---")
-        client.start_game(1)
-        time.sleep(3)
-
-        print("\n--- STOP_GAME ---")
-        client.stop_game()
-        time.sleep(0.5)
-
-        print("\n--- GET_STATE ---")
-        state = client.get_state()
-        print(f"    Stato LED: {state:05b}  (0x{state:02X})")
-
-        print("\n--- SET_STATE: spegni tutto ---")
-        client.set_state(0x00)
+        run_menu(client)
