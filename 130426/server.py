@@ -1,3 +1,15 @@
+"""Server TCP per gestire i LED e i giochi sul progetto LUCE.
+
+Questo modulo espone un server TCP che accetta un protocollo a 1 byte.
+I comandi ricevuti possono impostare direttamente lo stato dei LED oppure
+avviare uno dei giochi di luce predefiniti.
+
+Struttura principale:
+ - LEDBank: gestisce un insieme di LED fisici tramite una bitmask
+ - GameEngine: esegue pattern luminosi in un thread separato
+ - ProtocolServer: accetta connessioni, decodifica comandi e li inoltra
+"""
+
 import socket
 import threading
 import time
@@ -13,8 +25,10 @@ except (ImportError, Exception):
     class LED:
         def __init__(self, pin):
             self.pin = pin
+
         def on(self):
             print(f"  [mock] LED pin {self.pin:2d} → ON")
+
         def off(self):
             print(f"  [mock] LED pin {self.pin:2d} → OFF")
 
@@ -25,15 +39,15 @@ from protocol import Command, CommandType
 # CONFIGURAZIONE
 # ============================================================
 
-HOST = "0.0.0.0"   # accetta connessioni da qualsiasi interfaccia
+# Indirizzo e porta del server TCP. Il server ascolta su qualsiasi
+# interfaccia di rete disponibile e accetta connessioni provenienti da
+# altri dispositivi nella stessa rete locale.
+HOST = "0.0.0.0"
 PORT = 8888
 
-# I 5 LED sono mappati sui pin GPIO in ordine:
-# LED 0 → pin 17 (bit 0 della bitmask)
-# LED 1 → pin 27 (bit 1)
-# LED 2 → pin 22 (bit 2)
-# LED 3 → pin 23 (bit 3)
-# LED 4 → pin 24 (bit 4)
+# Mappatura dei 5 LED ai pin GPIO della Raspberry Pi.
+# La bitmask del comando SET_STATE usa il bit i-esimo per controllare
+# il LED con indice i.
 LED_PINS = [17, 27, 22, 23, 24]
 
 
@@ -45,16 +59,23 @@ class LEDBank:
     """Astrae un gruppo di LED fisici in un unico oggetto controllabile via bitmask."""
 
     def __init__(self, pins: list):
-        self._leds  = [LED(p) for p in pins]
-        self._state = 0x00  # stato corrente, utile per rispondere a GET_STATE
+        # Crea istanze LED per tutti i pin specificati.
+        self._leds = [LED(p) for p in pins]
+        self._state = 0x00  # stato interno attuale dei LED, utile per eventuali risposte future
 
     def set_state(self, bitmask: int):
         """Imposta lo stato di tutti i LED in un colpo solo.
 
         Il bit N della bitmask controlla il LED N:
-        se il bit è 1 il LED si accende, se è 0 si spegne.
+          - bit 1 -> LED acceso
+          - bit 0 -> LED spento
+
+        Anche se usiamo solo 5 LED, memorizziamo solo gli ultimi 8 bit per
+        mantenere una semantica semplice con la bitmask.
         """
         self._state = bitmask & 0xFF
+
+        # Itera attraverso i LED collegati e aggiorna ciascuno in base al bit corrispondente.
         for i, led in enumerate(self._leds):
             if bitmask & (1 << i):
                 led.on()
@@ -62,13 +83,15 @@ class LEDBank:
                 led.off()
 
     def get_state(self) -> int:
+        """Restituisce la bitmask corrispondente allo stato corrente dei LED."""
         return self._state
 
     def all_off(self):
+        """Spegne tutti i LED del banco."""
         self.set_state(0x00)
 
     def all_on(self):
-        # accende tutti: una maschera con tanti 1 quanti sono i LED
+        """Accende tutti i LED del banco."""
         self.set_state((1 << len(self._leds)) - 1)
 
 
@@ -79,29 +102,27 @@ class LEDBank:
 class GameEngine:
     """Gestisce i giochi di luce.
 
-    Ogni gioco gira in un thread separato. Per fermarlo si usa
-    lo stesso pattern stop_event visto in thread.py (160326):
-    un threading.Event fa da "bandierina" che il loop controlla
-    ad ogni iterazione.
+    Ogni gioco viene eseguito in un thread separato. Il thread legge
+    periodicamente un evento di stop per verificare se deve terminare.
     """
 
     def __init__(self, bank: LEDBank):
-        self.bank    = bank
+        self.bank = bank
         self._thread = None
-        self._stop   = threading.Event()
+        self._stop = threading.Event()
 
-        # mappa game_id → metodo di gioco (bound method, non serve passare self)
+        # Dizionario che associa un identificatore numerico al metodo del gioco.
         self._games = {
-            0:  self._game_chase,
-            1:  self._game_blink,
-            2:  self._game_alternating,
-            3:  self._game_binary_count,
-            4:  self._game_bounce,
-            5:  self._game_random,
-            6:  self._game_fill_drain,
-            7:  self._game_sos,
-            8:  self._game_heartbeat,
-            9:  self._game_inside_out,
+            0: self._game_chase,
+            1: self._game_blink,
+            2: self._game_alternating,
+            3: self._game_binary_count,
+            4: self._game_bounce,
+            5: self._game_random,
+            6: self._game_fill_drain,
+            7: self._game_sos,
+            8: self._game_heartbeat,
+            9: self._game_inside_out,
             10: self._game_knight_rider,
             11: self._game_police,
             12: self._game_strobe,
@@ -119,10 +140,7 @@ class GameEngine:
         }
 
     def _sleep(self, seconds: float):
-        """Sleep interrompibile: si sveglia subito se lo stop è richiesto.
-
-        Stesso trucco usato in SOSController._sleep_interrompibile (160326).
-        """
+        """Esegue una pausa interrompibile controllando l'evento di stop."""
         self._stop.wait(timeout=seconds)
 
     # --- Giochi ---
@@ -165,7 +183,6 @@ class GameEngine:
     def _game_bounce(self):
         """Gioco 4: ping pong — il punto di luce va avanti e indietro."""
         n = len(self.bank._leds)
-        # costruiamo la sequenza: 0,1,2,3,4,3,2,1 (i bordi non si ripetono)
         sequenza = list(range(n)) + list(range(n - 2, 0, -1))
         while not self._stop.is_set():
             for i in sequenza:
@@ -186,13 +203,11 @@ class GameEngine:
         """Gioco 6: riempie i LED uno alla volta da sinistra, poi li spegne da destra."""
         n = len(self.bank._leds)
         while not self._stop.is_set():
-            # riempi: a ogni passo accendiamo un LED in più
             for i in range(n):
                 if self._stop.is_set():
                     break
                 self.bank.set_state((1 << (i + 1)) - 1)
                 self._sleep(0.2)
-            # svuota: a ogni passo spegniamo il LED più a destra ancora acceso
             for i in range(n - 1, -1, -1):
                 if self._stop.is_set():
                     break
@@ -200,39 +215,38 @@ class GameEngine:
                 self._sleep(0.2)
 
     def _game_sos(self):
-        """Gioco 7: segnale SOS in codice Morse (· · · — — — · · ·) con tutti i LED.
-
-        Omaggio a 160326/thread.py — stessa logica, ma su tutti i LED in parallelo.
-        """
+        """Gioco 7: segnale SOS in codice Morse con tutti i LED."""
         while not self._stop.is_set():
-            for _ in range(3):          # S — tre brevi
-                if self._stop.is_set(): break
-                self.bank.all_on();  self._sleep(0.2)
+            for _ in range(3):
+                if self._stop.is_set():
+                    break
+                self.bank.all_on(); self._sleep(0.2)
                 self.bank.all_off(); self._sleep(0.2)
-            for _ in range(3):          # O — tre lunghi
-                if self._stop.is_set(): break
-                self.bank.all_on();  self._sleep(0.6)
+            for _ in range(3):
+                if self._stop.is_set():
+                    break
+                self.bank.all_on(); self._sleep(0.6)
                 self.bank.all_off(); self._sleep(0.2)
-            for _ in range(3):          # S — tre brevi
-                if self._stop.is_set(): break
-                self.bank.all_on();  self._sleep(0.2)
+            for _ in range(3):
+                if self._stop.is_set():
+                    break
+                self.bank.all_on(); self._sleep(0.2)
                 self.bank.all_off(); self._sleep(0.2)
-            self._sleep(1.0)            # pausa tra una ripetizione e l'altra
+            self._sleep(1.0)
 
     def _game_heartbeat(self):
-        """Gioco 8: doppio flash rapido seguito da una lunga pausa (battito cardiaco)."""
+        """Gioco 8: doppio flash rapido seguito da una lunga pausa."""
         while not self._stop.is_set():
-            self.bank.all_on();  self._sleep(0.08)   # primo battito
+            self.bank.all_on(); self._sleep(0.08)
             self.bank.all_off(); self._sleep(0.12)
-            self.bank.all_on();  self._sleep(0.08)   # secondo battito
-            self.bank.all_off(); self._sleep(0.8)    # diastole
+            self.bank.all_on(); self._sleep(0.08)
+            self.bank.all_off(); self._sleep(0.8)
 
     def _game_inside_out(self):
-        """Gioco 9: si espande dal LED centrale verso i bordi e poi si ricomprime."""
-        n   = len(self.bank._leds)
+        """Gioco 9: si espande dal centro verso i bordi e poi si ricomprime."""
+        n = len(self.bank._leds)
         mid = n // 2
 
-        # costruiamo le maschere di espansione una volta sola
         expand = []
         for r in range(mid + 1):
             mask = 0
@@ -241,7 +255,6 @@ class GameEngine:
                     mask |= (1 << i)
             expand.append(mask)
 
-        # la contrazione è l'espansione al contrario (senza ripetere il centro)
         contract = list(reversed(expand))
         sequenza = expand + contract[1:]
 
@@ -253,13 +266,14 @@ class GameEngine:
                 self._sleep(0.15)
 
     def _game_knight_rider(self):
-        """Gioco 10: Knight Rider — punto luminoso che rimbalza con scia di 2 LED."""
+        """Gioco 10: Knight Rider — scia di 2 LED che rimbalza avanti e indietro."""
         n = len(self.bank._leds)
         sequenza = list(range(n)) + list(range(n - 2, 0, -1))
         prev = None
         while not self._stop.is_set():
             for i in sequenza:
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 mask = (1 << i) | (1 << prev if prev is not None else 0)
                 self.bank.set_state(mask)
                 prev = i
@@ -267,32 +281,35 @@ class GameEngine:
 
     def _game_police(self):
         """Gioco 11: luci della polizia — sinistra e destra lampeggiano in alternanza."""
-        sinistra = 0b00011   # LED 0 e 1
-        destra   = 0b11000   # LED 3 e 4
+        sinistra = 0b00011
+        destra = 0b11000
         while not self._stop.is_set():
             for _ in range(3):
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 self.bank.set_state(sinistra); self._sleep(0.08)
-                self.bank.all_off();           self._sleep(0.05)
+                self.bank.all_off(); self._sleep(0.05)
             for _ in range(3):
-                if self._stop.is_set(): break
-                self.bank.set_state(destra);   self._sleep(0.08)
-                self.bank.all_off();           self._sleep(0.05)
+                if self._stop.is_set():
+                    break
+                self.bank.set_state(destra); self._sleep(0.08)
+                self.bank.all_off(); self._sleep(0.05)
             self._sleep(0.2)
 
     def _game_strobe(self):
-        """Gioco 12: strobo — blink velocissimo (effetto discoteca)."""
+        """Gioco 12: strobo — blink velocissimo."""
         while not self._stop.is_set():
-            self.bank.all_on();  self._sleep(0.04)
+            self.bank.all_on(); self._sleep(0.04)
             self.bank.all_off(); self._sleep(0.04)
 
     def _game_snake(self):
-        """Gioco 13: snake — chase con scia di 2 LED."""
+        """Gioco 13: snake — punto luminoso con scia di 2 LED."""
         n = len(self.bank._leds)
         sequenza = list(range(n)) + list(range(n - 2, 0, -1))
         while not self._stop.is_set():
             for idx, i in enumerate(sequenza):
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 mask = 1 << i
                 if idx > 0:
                     mask |= 1 << sequenza[idx - 1]
@@ -300,7 +317,7 @@ class GameEngine:
                 self._sleep(0.1)
 
     def _game_twinkle(self):
-        """Gioco 14: twinkle — LED casuali che lampeggiano brevemente e in modo irregolare."""
+        """Gioco 14: twinkle — accende e spegne LED casuali in modo irregolare."""
         n = len(self.bank._leds)
         while not self._stop.is_set():
             led = random.randint(0, n - 1)
@@ -314,35 +331,38 @@ class GameEngine:
         n = len(self.bank._leds)
         while not self._stop.is_set():
             mask = 0
-            for i in range(n):          # accendi da sinistra
-                if self._stop.is_set(): break
+            for i in range(n):
+                if self._stop.is_set():
+                    break
                 mask |= (1 << i)
                 self.bank.set_state(mask)
                 self._sleep(0.15)
-            for i in range(n):          # spegni da sinistra
-                if self._stop.is_set(): break
+            for i in range(n):
+                if self._stop.is_set():
+                    break
                 mask &= ~(1 << i)
                 self.bank.set_state(mask)
                 self._sleep(0.15)
 
     def _game_pairs(self):
-        """Gioco 16: coppie — (bordi), (interni), (centro) lampeggiano a turno."""
-        coppie = [0b10001, 0b01010, 0b00100]   # bordi → interni → centro
+        """Gioco 16: coppie — lampeggiano bordi, interni e centro a turno."""
+        coppie = [0b10001, 0b01010, 0b00100]
         while not self._stop.is_set():
             for mask in coppie:
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 self.bank.set_state(mask)
                 self._sleep(0.35)
             self.bank.all_off()
             self._sleep(0.15)
 
     def _game_morse_ciao(self):
-        """Gioco 17: scrive CIAO in codice Morse con tutti i LED."""
+        """Gioco 17: scrive CIAO in codice Morse usando tutti i LED."""
         DIT = 0.2
         DAH = 0.6
-        SEP = 0.2    # pausa tra simboli della stessa lettera
-        LET = 0.5    # pausa tra lettere
-        WRD = 1.2    # pausa tra ripetizioni della parola
+        SEP = 0.2
+        LET = 0.5
+        WRD = 1.2
 
         MORSE = {
             'C': [DAH, DIT, DAH, DIT],
@@ -354,35 +374,38 @@ class GameEngine:
         while not self._stop.is_set():
             for simboli in MORSE.values():
                 for durata in simboli:
-                    if self._stop.is_set(): break
-                    self.bank.all_on();  self._sleep(durata)
+                    if self._stop.is_set():
+                        break
+                    self.bank.all_on(); self._sleep(durata)
                     self.bank.all_off(); self._sleep(SEP)
                 self._sleep(LET)
             self._sleep(WRD)
 
     def _game_dice(self):
-        """Gioco 18: dado — agitazione casuale poi risultato 1–5 (N LED accesi da sinistra)."""
-        n       = len(self.bank._leds)
+        """Gioco 18: dado — agitazione casuale e poi risultato da 1 a 5 LED."""
+        n = len(self.bank._leds)
         max_val = (1 << n) - 1
         while not self._stop.is_set():
-            for _ in range(12):         # agitazione
-                if self._stop.is_set(): break
+            for _ in range(12):
+                if self._stop.is_set():
+                    break
                 self.bank.set_state(random.randint(1, max_val))
                 self._sleep(0.07)
-            if self._stop.is_set(): break
+            if self._stop.is_set():
+                break
             risultato = random.randint(1, n)
-            self.bank.set_state((1 << risultato) - 1)   # N LED accesi
+            self.bank.set_state((1 << risultato) - 1)
             self._sleep(2.0)
 
     def _game_binary_clock(self):
-        """Gioco 19: orologio binario — mostra i secondi correnti mod 32 in binario."""
+        """Gioco 19: orologio binario che mostra i secondi correnti mod 32."""
         while not self._stop.is_set():
             self.bank.set_state(int(time.time()) % 32)
             self._sleep(1.0)
 
     def _game_outside_in(self):
-        """Gioco 20: outside in — opposto di inside out, si comprime dai bordi al centro."""
-        n   = len(self.bank._leds)
+        """Gioco 20: opposite di inside_out, si comprime dai bordi al centro."""
+        n = len(self.bank._leds)
         mid = n // 2
 
         expand = []
@@ -393,36 +416,40 @@ class GameEngine:
                     mask |= (1 << i)
             expand.append(mask)
 
-        sequenza = list(reversed(expand)) + expand[1:]   # pieno→centro→pieno
+        sequenza = list(reversed(expand)) + expand[1:]
 
         while not self._stop.is_set():
             for mask in sequenza:
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 self.bank.set_state(mask)
                 self._sleep(0.15)
 
     def _game_zip(self):
-        """Gioco 21: zip — due punti partono dai bordi opposti e si incrociano al centro."""
+        """Gioco 21: zip — due punti si avvicinano e si allontanano al centro."""
         n = len(self.bank._leds)
         while not self._stop.is_set():
-            for step in range(n // 2 + 1):     # avvicinamento
-                if self._stop.is_set(): break
+            for step in range(n // 2 + 1):
+                if self._stop.is_set():
+                    break
                 mask = (1 << step) | (1 << (n - 1 - step))
                 self.bank.set_state(mask)
                 self._sleep(0.12)
-            for step in range(n // 2, -1, -1): # allontanamento
-                if self._stop.is_set(): break
+            for step in range(n // 2, -1, -1):
+                if self._stop.is_set():
+                    break
                 mask = (1 << step) | (1 << (n - 1 - step))
                 self.bank.set_state(mask)
                 self._sleep(0.12)
 
     def _game_fireworks(self):
-        """Gioco 22: fuochi d'artificio — esplosioni di luce che si espandono da un punto casuale."""
+        """Gioco 22: fuochi d'artificio — esplosione luminosa da un punto casuale."""
         n = len(self.bank._leds)
         while not self._stop.is_set():
             centro = random.randint(0, n - 1)
             for raggio in range(n):
-                if self._stop.is_set(): break
+                if self._stop.is_set():
+                    break
                 mask = 0
                 for i in range(centro - raggio, centro + raggio + 1):
                     if 0 <= i < n:
@@ -433,7 +460,7 @@ class GameEngine:
             self._sleep(random.uniform(0.3, 0.7))
 
     def _game_morse_luce(self):
-        """Gioco 23: scrive LUCE in codice Morse (tematico con il progetto)."""
+        """Gioco 23: scrive LUCE in codice Morse con tutti i LED."""
         DIT = 0.2
         DAH = 0.6
         SEP = 0.2
@@ -450,8 +477,9 @@ class GameEngine:
         while not self._stop.is_set():
             for simboli in MORSE.values():
                 for durata in simboli:
-                    if self._stop.is_set(): break
-                    self.bank.all_on();  self._sleep(durata)
+                    if self._stop.is_set():
+                        break
+                    self.bank.all_on(); self._sleep(durata)
                     self.bank.all_off(); self._sleep(SEP)
                 self._sleep(LET)
             self._sleep(WRD)
@@ -459,7 +487,7 @@ class GameEngine:
     # --- Controllo ---
 
     def start(self, game_id: int):
-        # se c'è già un gioco in corso lo fermiamo prima di avviarne uno nuovo
+        """Avvia un gioco specificato dall'identificatore game_id."""
         self.stop()
 
         game_fn = self._games.get(game_id)
@@ -473,6 +501,7 @@ class GameEngine:
         print(f"[GAME] avviato gioco {game_id}")
 
     def stop(self):
+        """Ferma il gioco in esecuzione e spegne tutti i LED."""
         if self._thread and self._thread.is_alive():
             self._stop.set()
             self._thread.join()
@@ -485,28 +514,18 @@ class GameEngine:
 # ============================================================
 
 class ProtocolServer:
-    """Server TCP che interpreta il protocollo a 1 byte e controlla LED e giochi.
-
-    Può gestire più client in contemporanea: ogni connessione
-    viene affidata a un thread separato.
-    """
+    """Server TCP che interpreta il protocollo a 1 byte e controlla LED e giochi."""
 
     def __init__(self, host: str, port: int, led_pins: list):
-        self.host   = host
-        self.port   = port
-        self.bank   = LEDBank(led_pins)
+        self.host = host
+        self.port = port
+        self.bank = LEDBank(led_pins)
         self.engine = GameEngine(self.bank)
 
     def _dispatch(self, cmd: Command):
-        """Esegue l'azione in base al tipo di comando.
-
-        SET_STATE  → ferma eventuale gioco, imposta bitmask LED
-        START_GAME → avvia il gioco (ferma automaticamente il precedente)
-
-        Il protocollo è unidirezionale: il server non invia risposte.
-        """
+        """Esegue l'azione corrispondente al comando ricevuto."""
         if cmd.tipo == CommandType.SET_STATE:
-            self.engine.stop()              # un nuovo stato ferma il gioco
+            self.engine.stop()
             self.bank.set_state(cmd.valore)
             print(f"[SET_STATE] bitmask = {cmd.valore:05b}")
 
@@ -514,11 +533,12 @@ class ProtocolServer:
             self.engine.start(cmd.valore)
 
     def _handle_client(self, conn: socket.socket, addr):
+        """Gestisce la comunicazione con un singolo client."""
         print(f"[CONN] connesso: {addr}")
 
         try:
             while True:
-                data = conn.recv(Command.SIZE)   # legge esattamente 1 byte
+                data = conn.recv(Command.SIZE)
                 if not data:
                     break
 
@@ -526,7 +546,6 @@ class ProtocolServer:
                     cmd = Command.decode(data)
                     print(f"[RX] {cmd}")
                     self._dispatch(cmd)
-
                 except ValueError as e:
                     print(f"[ERR] {e}")
 
@@ -537,6 +556,7 @@ class ProtocolServer:
             print(f"[CONN] disconnesso: {addr}")
 
     def run(self):
+        """Avvia il server TCP e accetta connessioni in un loop infinito."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             srv.bind((self.host, self.port))

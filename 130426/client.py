@@ -35,11 +35,11 @@ class ProtocolClient:
         self._sock = None
 
     def connect(self):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.connect((self.host, self.port))
-        print(f"[CLIENT] connesso a {self.host}:{self.port}")
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # TCP
+        self._sock.connect((self.host, self.port)) # ValueError se non riesce a connettersi
+        print(f"[CLIENT] connesso a {self.host}:{self.port}") # print di debug per confermare la connessione
 
-    def close(self):
+    def close(self): # chiude la connessione se è aperta
         if self._sock:
             self._sock.close()
             self._sock = None
@@ -47,31 +47,31 @@ class ProtocolClient:
 
     # --- Context manager ---
 
-    def __enter__(self):
+    def __enter__(self): # apre la connessione quando si entra nel blocco with
         self.connect()
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_): # chiude la connessione quando si esce dal blocco with, anche in caso di eccezioni
         self.close()
 
     # --- Invio raw ---
 
-    def _send(self, cmd: Command):
+    def _send(self, cmd: Command): # cmd è già un byte (int 0–255) restituito da cmd_set_state o cmd_start_game
         """Invia 1 byte al server. Nessuna risposta attesa."""
         self._sock.sendall(cmd.encode())
         print(f"[TX] {cmd}")
 
     # --- API pubblica ---
 
-    def set_state(self, bitmask: int):
+    def set_state(self, bitmask: int): # 0–31 per 5 LED
         """Imposta i LED tramite bitmask (bit 0–4 = LED 0–4). Ferma anche il gioco."""
         self._send(cmd_set_state(bitmask))
 
-    def start_game(self, game_id: int):
+    def start_game(self, game_id: int): # 0–223 (perché 32–255 sono riservati ai giochi, quindi game_id = cmd - 32)
         """Avvia il gioco con l'ID specificato (0–223)."""
         self._send(cmd_start_game(game_id))
 
-    def stop(self):
+    def stop(self): # non accetta argomenti perché il comando è sempre lo stesso (0) per spegnere tutto
         """Ferma il gioco e spegne tutti i LED (invia bitmask 0)."""
         self._send(cmd_all_off())
 
@@ -119,7 +119,7 @@ MENU_PRINCIPALE = """
 ╚══════════════════════════════════════╝
 """
 
-def _build_game_menu() -> str:
+def _build_game_menu() -> str: 
     """Costruisce dinamicamente il menu dei giochi dalla lista GAMES."""
     righe = ["", "╔══════════════════════════════════════════════════╗"]
     righe.append(   "║               GIOCHI DI LUCE                    ║")
@@ -134,10 +134,10 @@ def _build_game_menu() -> str:
 
 MENU_GIOCHI = _build_game_menu()
 
-GAME_IDS = {str(k) for k in GAMES}
+GAME_IDS = {str(k) for k in GAMES} # set di stringhe "0", "1", ..., usato per validare l'input dell'utente
 
 
-def _parse_bitmask(raw: str) -> int:
+def _parse_bitmask(raw: str) -> int: # ValueError se il formato è errato o il numero è fuori range
     """Converte la stringa inserita dall'utente in un intero.
 
     Accetta tre formati:
@@ -162,7 +162,7 @@ def _parse_bitmask(raw: str) -> int:
     return valore
 
 
-def _menu_giochi(client: ProtocolClient):
+def _menu_giochi(client: ProtocolClient): # mostra il menu dei giochi e gestisce l'input dell'utente per avviare i giochi
     print(MENU_GIOCHI)
 
     max_id = max(GAMES)
@@ -185,7 +185,7 @@ def _menu_giochi(client: ProtocolClient):
             client.start_game(game_id)
 
 
-def run_menu(client: ProtocolClient):
+def run_menu(client: ProtocolClient): # mostra il menu principale e gestisce l'input dell'utente per i comandi SET_STATE, START_GAME e STOP
     print(MENU_PRINCIPALE)
 
     while True:
@@ -198,7 +198,7 @@ def run_menu(client: ProtocolClient):
             raw = input("    bitmask (es. 10101 oppure 0x15 oppure 21): ").strip()
             try:
                 valore = _parse_bitmask(raw)
-                client.set_state(valore)
+                client.set_state(valore) # invia il comando al server per impostare i LED secondo la bitmask specificata
             except ValueError as e:
                 print(f"    errore: {e}")
 
